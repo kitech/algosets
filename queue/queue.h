@@ -45,7 +45,8 @@ public:
                 ++head;
             }
             if (head == tail) {
-                head = -1;
+                head = -1; // 很重要的设置成一个初始化状态
+                tail = 0;
             }
         } else {
             return -1;
