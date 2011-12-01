@@ -8,7 +8,7 @@ class LeoQueue
 public:
     LeoQueue() {
         head = -1;
-        tail = -1;
+        tail = 0;
     }
 
     virtual ~LeoQueue() {
@@ -17,14 +17,16 @@ public:
 
     bool enqueue(int e) {
         if (!this->full()) {
+            if (head == -1) {
+                head = tail;
+            }
+
             this->elems[tail] = e;
+
             if (tail == MAX_ELEMENT_COUNT-1) {
                 tail = 0;
             } else {
                 ++ tail;
-            }
-            if (head == -1) {
-                head = 0;
             }
         } else {
             return false;
@@ -42,6 +44,9 @@ public:
             } else {
                 ++head;
             }
+            if (head == tail) {
+                head = -1;
+            }
         } else {
             return -1;
         }
@@ -49,18 +54,18 @@ public:
     }
 
     bool full() {
-        if (head < tail) {
-            return head + 1 < tail;
-        } else if (head > tail) {
-            return false;
-        } else {
-            return false;
+        if (head == tail) {
+            return true;
         }
         return false;
     }
 
     bool empty() {
-        return (head == tail);
+        if (head == -1) {
+            return true;
+        }
+
+        return false;
     }
 
     int size() {
@@ -71,10 +76,15 @@ public:
         if (head == -1) {
             return 0;
         }
-        if (head < tail) {
+        std::cout<<"c="<<head<<" " <<tail<<std::endl;
+        if (head == tail) {
+            // full state
+            return MAX_ELEMENT_COUNT;
+        } else if (head < tail) {
             return (tail - head);
         } else {
             int c = ((MAX_ELEMENT_COUNT - head) + tail);
+            std::cout<<"c="<<c<<std::endl;
             return c;
         }
         return 0;

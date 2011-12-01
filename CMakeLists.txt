@@ -6,4 +6,5 @@ include_directories(queue)
 
 add_executable(alg main.cpp
     queue/queue.cpp
+    tinylog.h
 )

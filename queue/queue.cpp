@@ -15,11 +15,13 @@ void test_queue_queue()
 
     assert(qq.count() == 1);
 
-    qq.enqueue(578);
+    bret = qq.enqueue(578);
+    assert(bret == true);
 
     assert(qq.count() == 2);
 
-    qq.enqueue(98362);
+    bret = qq.enqueue(98362);
+    assert(bret == true);
 
     assert(qq.count() == 3);
 
@@ -28,6 +30,16 @@ void test_queue_queue()
     int de;
 
     de = qq.dequeue();
-
+    std::cout<<"den:"<<de<<std::endl;
     assert(qq.count() == 2);
+
+    de = qq.dequeue();
+    std::cout<<"den:"<<de<<std::endl;
+    assert(qq.count() == 1);
+
+    de = qq.dequeue();
+    std::cout<<"den:"<<de<<std::endl;
+    assert(qq.count() == 0);
+
+    assert(qq.empty() == true);
 }
