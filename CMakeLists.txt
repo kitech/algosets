@@ -9,6 +9,7 @@ include_directories(queue)
 add_executable(alg main.cpp
     queue/queue.cpp
     maxgap.cpp
+    disjointset.cpp
     tinylog.h
     stdlog.cpp
 )
