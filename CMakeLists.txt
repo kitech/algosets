@@ -10,6 +10,7 @@ add_executable(alg main.cpp
     queue/queue.cpp
     maxgap.cpp
     disjointset.cpp
+    max_sub_set.cpp
     tinylog.h
     stdlog.cpp
 )
