@@ -9,25 +9,27 @@
 
 int max_sub_set(int *ssets, int len, int *ssb, int *sse)
 {
-    int res = - INT_MAX;
+    int res;
+    int max;
 
-    int *rsubs = (int*)calloc(1, len * sizeof(int*));
+    int tb = 0;
+    *ssb = *sse = 0;
+    res = max = ssets[0];
 
-
-    memset(rsubs, 0, sizeof(int*)*len);
-    for (int i = 0; i < len; ++i) {
-        if (i == 0) {
-            rsubs[i] = ssets[i];
+    for (int i = 1; i < len; ++i) {
+        if (max >= 0) {
+            max += ssets[i];
         } else {
-            rsubs[i] = rsubs[i-1] > 0 ? (rsubs[i-1]+ssets[i]) : ssets[i];
+            max = ssets[i];
+            tb = i;
         }
-        if (rsubs[i] > res) {
-            res = rsubs[i];
+
+        if (max > res) {
+            res = max;
+            *ssb = tb;
             *sse = i;
         }
     }
-
-    free(rsubs);
 
     return res;
 }
@@ -52,7 +54,7 @@ void test_max_sub_set()
 
     maxr = max_sub_set(ssets, len, &ssb, &sse);
 
-    qLogx()<<"max sub set res:"<<maxr<<ssb<<sse<<sstr;
+    qLogx()<<"max sub set res:"<<maxr<<ssb<<sse<<". sets:"<<sstr;
 
     free(ssets);
 }
