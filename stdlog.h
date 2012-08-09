@@ -1,6 +1,8 @@
 #ifndef _STDLOG_H_
 #define _STDLOG_H_
 
+#include <unistd.h>
+#include <sys/syscall.h>
 #include <syscall.h>
 
 #include <iostream>
