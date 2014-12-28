@@ -35,6 +35,6 @@ void MainWindow::on_pushButton_2_clicked()
 {
     qDebug()<<"select me.....";
     foreach (auto *rn, nodes) {
-        rn->on_select_me();
+        rn->on_state_machine();
     }
 }
