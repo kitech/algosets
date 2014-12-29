@@ -38,3 +38,11 @@ void MainWindow::on_pushButton_2_clicked()
         rn->on_state_machine();
     }
 }
+
+void MainWindow::on_pushButton_3_clicked()
+{
+    foreach (auto *rn, nodes) {
+        // rn->on_state_machine();
+        rn->dumpState();
+    }
+}

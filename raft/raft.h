@@ -109,25 +109,39 @@ public:
             items[0].socket = _cms._ssock;
             items[0].events = ZMQ_POLLIN;
 
+            qDebug()<<_cms._nid<<" polling...";
             int rc = zmq_poll(items, 1, -1);
+            qDebug()<<_cms._nid<<" polled:"<<rc;
             if (rc == 1) {
                 char buf[100];
                 rc = zmq_recv(_cms._ssock, buf, 100, 0);
                 // qDebug()<<_cms._nid<<"recv msg:"<<rc<<errno;
+                assert(rc > 0);
                 buf[rc] = 0;
                 this->on_proc_recv(_cms._ssock, buf);
 
             } else {
                 qDebug()<<_cms._nid<<"poll err:"<<rc<<errno;
             }
-
+            qDebug()<<_cms._nid<<" next poll:"<<cnter;
             cnter ++;
 //            if (cnter++ == 3) break;
         }
+        qDebug()<<_cms._nid<<" thread exited, ooops."<<cnter;
     }
 
 
 public slots: // seft emi
+    void dumpState()
+    {
+        qDebug()<<"nid:"<<_cms._nid
+               <<"ntype:"<<_cms._ntype;
+        qDebug()<<"term:"<<_cms._term
+               <<"leader:"<<_cms._leader_id
+               <<"candidate:"<<_cms._candidate_id;
+        qDebug()<<"btime:"<<_cms._begin_time;
+        qDebug()<<"";
+    }
 
     void on_ticks_timeout()
     {
@@ -142,9 +156,12 @@ public slots: // seft emi
                 on_vote_me();
             } else {
                 // keep state
+                qDebug()<<_cms._nid<<"already has leader:"<<_cms._leader_id;
             }
             break;
-        default: break;
+        default:
+            qDebug()<<_cms._nid<<"unknown ntype:"<<_cms._ntype;
+            break;
         }
     }
 
@@ -157,6 +174,8 @@ public slots: // seft emi
         _cms._term += 1;
         _cds._begin_time = QDateTime::currentDateTime();
 
+        qDebug()<<_cms._nid<<" pub vote...";
+        int cnter = 0;
         char buf[128];
         for (int i = 0; i < 5; i++) {
             if (i == _cms._nid) continue;
@@ -187,6 +206,7 @@ public slots: // seft emi
             rc = zmq_send(sock, buf, strlen(buf), 0);
 //            rc = zmq_send(sock, "Hello", 5, 0);
             assert(rc > 0);
+            cnter ++;
 
 //            zmq_msg_t request;
 //            zmq_msg_init_size(&request, 6);
@@ -199,6 +219,8 @@ public slots: // seft emi
 //            zmq_ctx_destroy(ctx);
 
         }
+
+        qDebug()<<_cms._nid<<" pub vote:"<<cnter;
     }
 
     bool has_vote_dispute()
@@ -255,7 +277,7 @@ public slots: // seft emi
         void *sock = _cms._peer_socks[nid];
         int rc = zmq_send(sock, buf, strlen(buf), 0);
         assert(rc > 0);
-
+        qDebug()<<_cms._nid<<"send cmd done:"<<rc<<jstr.length()<<jstr;
     }
 
     //
