@@ -107,19 +107,27 @@ public:
         while (true) {
             zmq_pollitem_t items[1];
             items[0].socket = _cms._ssock;
-            items[0].events = ZMQ_POLLIN;
+            items[0].events = ZMQ_POLLIN | ZMQ_POLLERR;
 
             qDebug()<<_cms._nid<<" polling...";
             int rc = zmq_poll(items, 1, -1);
-            qDebug()<<_cms._nid<<" polled:"<<rc;
+            qDebug()<<_cms._nid<<" polled:"<<rc
+                   <<(items[0].revents & ZMQ_POLLIN)<<(items[0].revents & ZMQ_POLLERR);
             if (rc == 1) {
-                char buf[100];
-                rc = zmq_recv(_cms._ssock, buf, 100, 0);
-                // qDebug()<<_cms._nid<<"recv msg:"<<rc<<errno;
-                assert(rc > 0);
-                buf[rc] = 0;
-                this->on_proc_recv(_cms._ssock, buf);
-
+                while (true) {
+                    char buf[128];
+                    rc = zmq_recv(_cms._ssock, buf, 128, ZMQ_DONTWAIT);
+                    // qDebug()<<_cms._nid<<"recv msg:"<<rc<<errno;
+                    if (rc == -1 && errno == EAGAIN) break;
+                    if (rc == -1 && errno != EAGAIN) {
+                        qDebug()<<_cms._nid<<"recv err:"<<rc<<errno;
+                        // (errno == EFSM)???
+                        break;
+                    }
+                    assert(rc > 0);
+                    buf[rc] = 0;
+                    this->on_proc_recv(_cms._ssock, buf);
+                }
             } else {
                 qDebug()<<_cms._nid<<"poll err:"<<rc<<errno;
             }
