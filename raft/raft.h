@@ -7,8 +7,6 @@
 #include <QtCore>
 #include <QtNetwork>
 
-#include <zmq.h>
-
 
 class RaftNode : public QThread
 {
@@ -19,8 +17,8 @@ public:
         RCMD_VOTE_ME = 1,
         RCMD_AGREE_VOTE,
         RCMD_LEADER_CONFIRM,
-        RCMD_PING_LEADER,
-        RCMD_LEADER_PONG,
+        RCMD_LEADER_PING,
+        RCMD_FLOWER_PONG,
         RCMD_DATA,
         RCMD_MAX = 128
     };
@@ -38,12 +36,11 @@ protected:
         int _nid = 0;
         unsigned short _port = -1;
 
-        void *_sctx = NULL;
-        void *_ssock = NULL;
+        QTcpServer *_ssock2 = NULL;
+        QHash<QTcpSocket*, int> _cli_socks; // 连接到本机的客户端列表
 
-        // store peers's conn info
-        void *_peer_ctxs[10] = {0};
-        void *_peer_socks[10] = {0};
+        // 连接到其他节点服务的socket
+        QHash<int, QTcpSocket*>_peer_socks3;
 
         QTimer _ticks;
         int _leader_id = -1;
@@ -54,12 +51,13 @@ protected:
     struct LeaderState : public ShareState
     {
         bool _leave_reign = false;
+        QTimer *_tmer = NULL;
     };
 
     struct CandidateState : public ShareState
     {
         int _agree_timeout = 3;
-        QMap<int, bool> _peer_resps; // nid => agree/not
+        QMap<int, QByteArray> _peer_resps; // nid => agree/not
     };
 
     struct FlowerState : public ShareState
@@ -67,6 +65,7 @@ protected:
         // node state
         int _ping_leader_times = 0;
         int _ping_leader_error_times = 0;
+        QDateTime _leader_last_update_time;
     };
 
 private:
@@ -85,13 +84,8 @@ public:
         _cms._nid = id;
         _cms._port = _port_base + id;
 
-       _cms._sctx = zmq_ctx_new();
-        zmq_ctx_set(_cms._sctx, ZMQ_IO_THREADS, 1);
-
-        _cms._ssock = zmq_socket(_cms._sctx, ZMQ_REP);
-        zmq_bind(_cms._ssock, QString("tcp://*:%1").arg(_cms._port).toLatin1().data());
-
         _cms._begin_time = QDateTime::currentDateTime();
+        this->init();
     }
 
     ~RaftNode()
@@ -99,55 +93,61 @@ public:
 
     }
 
+    void on_server_new_connection()
+    {
+        QTcpServer *s = _cms._ssock2;
+        QTcpSocket *c = s->nextPendingConnection();
+        this->_cms._cli_socks.insert(c, 1);
+
+        connect(c, &QTcpSocket::readyRead, this, &RaftNode::on_server_ready_read);
+    }
+
+    void on_server_ready_read()
+    {
+        QTcpSocket *c = (QTcpSocket*)sender();
+        QByteArray ba = c->readAll();
+
+        this->on_proc_recv(c, ba);
+    }
+
+    // 在线程中初始化QTcpServer端，其相关操作在线程中执行。
+    void init()
+    {
+        _cms._ssock2 = new QTcpServer();
+        QTcpServer *s = _cms._ssock2;
+        connect(s, &QTcpServer::newConnection, this, &RaftNode::on_server_new_connection);
+
+        s->listen(QHostAddress::Any, _cms._port);
+    }
+
     void run()
     {
-        int cnter = 0;
-    //    exec();
-        qDebug()<<"running "<<_cms._nid;
-        while (true) {
-            zmq_pollitem_t items[1];
-            items[0].socket = _cms._ssock;
-            items[0].events = ZMQ_POLLIN | ZMQ_POLLERR;
-
-            qDebug()<<_cms._nid<<" polling...";
-            int rc = zmq_poll(items, 1, -1);
-            qDebug()<<_cms._nid<<" polled:"<<rc
-                   <<(items[0].revents & ZMQ_POLLIN)<<(items[0].revents & ZMQ_POLLERR);
-            if (rc == 1) {
-                while (true) {
-                    char buf[128];
-                    rc = zmq_recv(_cms._ssock, buf, 128, ZMQ_DONTWAIT);
-                    // qDebug()<<_cms._nid<<"recv msg:"<<rc<<errno;
-                    if (rc == -1 && errno == EAGAIN) break;
-                    if (rc == -1 && errno != EAGAIN) {
-                        qDebug()<<_cms._nid<<"recv err:"<<rc<<errno;
-                        // (errno == EFSM)???
-                        break;
-                    }
-                    assert(rc > 0);
-                    buf[rc] = 0;
-                    this->on_proc_recv(_cms._ssock, buf);
-                }
-            } else {
-                qDebug()<<_cms._nid<<"poll err:"<<rc<<errno;
-            }
-            qDebug()<<_cms._nid<<" next poll:"<<cnter;
-            cnter ++;
-//            if (cnter++ == 3) break;
-        }
-        qDebug()<<_cms._nid<<" thread exited, ooops."<<cnter;
+//        this->init();
+        this->exec();
     }
 
 
 public slots: // seft emi
+    QString ntname(int t)
+    {
+        switch (t) {
+        case RNT_CANDIDATE: return "candidate";
+        case RNT_FLOWER:  return "flower";
+        case RNT_LEADER:  return "leader";
+        default:  return "unknown";
+        }
+    }
+
     void dumpState()
     {
         qDebug()<<"nid:"<<_cms._nid
-               <<"ntype:"<<_cms._ntype;
+               <<"ntype:"<<_cms._ntype<<ntname(_cms._ntype);
         qDebug()<<"term:"<<_cms._term
                <<"leader:"<<_cms._leader_id
                <<"candidate:"<<_cms._candidate_id;
         qDebug()<<"btime:"<<_cms._begin_time;
+        qDebug()<<"clisocks:"<<_cms._cli_socks.count();
+        qDebug()<<"peersocks:"<<_cms._peer_socks3.count();
         qDebug()<<"";
     }
 
@@ -161,7 +161,7 @@ public slots: // seft emi
         switch (_cms._ntype) {
         case RNT_FLOWER:
             if (_cms._leader_id < 0) {
-                on_vote_me();
+                on_vote_me2();
             } else {
                 // keep state
                 qDebug()<<_cms._nid<<"already has leader:"<<_cms._leader_id;
@@ -173,29 +173,59 @@ public slots: // seft emi
         }
     }
 
-    void on_vote_me()
+    void on_vote_resp_timeout()
+    {
+        qDebug()<<sender();
+        qDebug()<<_cms._nid<<_cds._peer_resps.count();
+
+        QHash<int, QJsonObject> resps;
+        for (auto it = _cds._peer_resps.begin(); it != _cds._peer_resps.end(); it++) {
+            QJsonObject jsobj = QJsonDocument::fromJson(it.value()).object();
+            resps.insert(it.key(), jsobj);
+        }
+
+        QHash<int, int> agrees;
+        for (auto it = resps.begin(); it != resps.end(); it++) {
+            QJsonObject jsobj = it.value();
+            int agreed = jsobj.value("agree").toInt();
+            agrees.insert(it.key(), agreed);
+        }
+
+        qDebug()<<_cms._nid<<agrees<<agrees.values().count(1);
+        if (agrees.values().count(1) <= (5 / 2)) {
+            _cms._ntype = RNT_FLOWER;
+            QTimer::singleShot(qrand()%400, this, SLOT(on_state_machine()));
+        } else {
+            // be leader
+            qDebug()<<_cms._nid<<"i am become leader.";
+            this->on_become_leader();
+        }
+    }
+
+    void on_vote_me2()
     {
         assert(_cms._ntype != RNT_CANDIDATE);
         assert(_cms._leader_id < 0);
 
+
         _cms._ntype = RNT_CANDIDATE;
         _cms._term += 1;
+        _cds._peer_resps.clear();
         _cds._begin_time = QDateTime::currentDateTime();
+        QTimer *tmer = new QTimer(this);
+        tmer->setSingleShot(true);
+        connect(tmer, &QTimer::timeout, this, &RaftNode::on_vote_resp_timeout);
+        tmer->start(300);
 
         qDebug()<<_cms._nid<<" pub vote...";
         int cnter = 0;
-        char buf[128];
         for (int i = 0; i < 5; i++) {
             if (i == _cms._nid) continue;
             int rc = 0;
-            void *sock = NULL;
+            QTcpSocket *sock = NULL;
 
-            connect_to_peer(i);
-            sock = _cms._peer_socks[i];
-
-            QMap<QString, QString> cmd;
-            cmd["cmd"] = QString::number(RCMD_VOTE_ME);
-            cmd["nid"] = QString::number(_cms._nid);
+            connect_to_peer2(i);
+            sock = _cms._peer_socks3[i];
 
             QJsonObject jsobj;
             jsobj.insert("cmd", QJsonValue(QString::number(RCMD_VOTE_ME)));
@@ -206,30 +236,15 @@ public slots: // seft emi
             QByteArray jstr = QJsonDocument(jsobj).toJson(QJsonDocument::Compact);
 //            qDebug()<<_cms._nid<<"cmd:"<<jstr.length()<<jstr;
 
-            sprintf(buf, "Hello, %d -> %d", _cms._nid, i);
-            strncpy(buf, jstr.data(), jstr.length());
-            buf[jstr.length()] = 0;
-
-//            rc = zmq_send(sock, jstr.data(), jstr.length(), 0);
-            rc = zmq_send(sock, buf, strlen(buf), 0);
-//            rc = zmq_send(sock, "Hello", 5, 0);
+            rc = sock->write(jstr);
             assert(rc > 0);
             cnter ++;
-
-//            zmq_msg_t request;
-//            zmq_msg_init_size(&request, 6);
-//            memcpy(zmq_msg_data(&request), "Hello", 5);
-//            rc = zmq_msg_send(&request, _ssock, 0);
-//            qDebug()<<_cms._nid<<"send to "<<i<<rc<<errno<<zmq_errno();
-
-            // cleanup
-//            zmq_close(sock);
-//            zmq_ctx_destroy(ctx);
 
         }
 
         qDebug()<<_cms._nid<<" pub vote:"<<cnter;
     }
+
 
     bool has_vote_dispute()
     {
@@ -241,29 +256,42 @@ public slots: // seft emi
 
     }
 
-    void connect_to_peer(int nid)
+
+
+    void on_peer_ready_read()
     {
-        int rc = 0;
-        void *ctx = NULL;
-        void *sock = NULL;
+        QTcpSocket *sock = (QTcpSocket*)sender();
+        QByteArray ba = sock->readAll();
 
-        if (_cms._peer_ctxs[nid] == NULL) {
-            ctx = zmq_ctx_new();
-            zmq_ctx_set(ctx, ZMQ_IO_THREADS, 1);
+        QJsonDocument jdoc = QJsonDocument::fromJson(ba);
+        QJsonObject jsobj = jdoc.object();
+        int peer_nid = jsobj.value("nid").toString().toInt();
+        _cds._peer_resps.insert(peer_nid, ba);
 
-            sock = zmq_socket(ctx, ZMQ_REQ);
-            rc = zmq_connect(sock, QString("tcp://localhost:%1").arg(_port_base+nid).toLatin1().data());
-//            qDebug()<<_cms._nid<<" connect to "<<nid<<rc<<errno<<zmq_errno();
-            assert(rc == 0);
-            _cms._peer_ctxs[nid] = ctx;
-            _cms._peer_socks[nid] = sock;
+        qDebug()<<_cms._nid<<"resp:"<<ba.length()<<ba<<_cds._peer_resps.count();
+    }
+    void on_peer_close()
+    {
+        qDebug()<<"closed"<<sender();
+    }
+
+    void connect_to_peer2(int nid)
+    {
+        QTcpSocket *sock = NULL;
+        if (_cms._peer_socks3.value(nid) == NULL) {
+            sock = new QTcpSocket(this);
+            connect(sock, &QTcpSocket::readyRead, this, &RaftNode::on_peer_ready_read);
+            connect(sock, &QTcpSocket::disconnected, this, &RaftNode::on_peer_close);
+
+            sock->connectToHost("localhost", _port_base+nid);
+            sock->waitForConnected();
+            _cms._peer_socks3.insert(nid, sock);
         } else {
-            ctx = _cms._peer_ctxs[nid];
-            sock = _cms._peer_socks[nid];
+            sock = _cms._peer_socks3.value(nid);
         }
     }
 
-    void on_agree_vote(QJsonObject &jsobj)
+    void on_agree_vote(QTcpSocket *sock, QJsonObject &jsobj)
     {
         int nid = jsobj.value("nid").toString().toInt();
         _cms._leader_id = nid;
@@ -273,36 +301,105 @@ public slots: // seft emi
         njsobj.insert("cmd", QString::number(RCMD_AGREE_VOTE));
         njsobj.insert("nid", QString::number(_cms._nid));
         njsobj.insert("to_nid", QString::number(nid));
+        njsobj.insert("agree", 1);
 
-        char buf[128];
         QByteArray jstr = QJsonDocument(njsobj).toJson(QJsonDocument::Compact);
-        strncpy(buf, jstr.data(), jstr.length());
-        buf[jstr.length()] = 0;
         qDebug()<<_cms._nid<<"send cmd:"<<jstr.length()<<jstr;
 
-        connect_to_peer(nid);
-        assert(_cms._peer_socks[nid] != NULL);
-        void *sock = _cms._peer_socks[nid];
-        int rc = zmq_send(sock, buf, strlen(buf), 0);
+        int rc = sock->write(jstr);
         assert(rc > 0);
         qDebug()<<_cms._nid<<"send cmd done:"<<rc<<jstr.length()<<jstr;
     }
 
-    //
-    void on_leader_confirm()
+    void on_reject_vote(QTcpSocket *sock, QJsonObject &jsobj)
     {
+        int nid = jsobj.value("nid").toString().toInt();
+
+        QJsonObject njsobj;
+        njsobj.insert("cmd", QString::number(RCMD_AGREE_VOTE));
+        njsobj.insert("nid", QString::number(_cms._nid));
+        njsobj.insert("to_nid", QString::number(nid));
+        njsobj.insert("agree", 0);
+
+        QByteArray jstr = QJsonDocument(njsobj).toJson(QJsonDocument::Compact);
+        qDebug()<<_cms._nid<<"send cmd:"<<jstr.length()<<jstr;
+
+        int rc = sock->write(jstr);
+        assert(rc > 0);
+        qDebug()<<_cms._nid<<"send cmd done:"<<rc<<jstr.length()<<jstr;
+    }
+
+    void on_become_leader()
+    {
+        _cms._ntype = RNT_LEADER;
+        _lds._begin_time = QDateTime::currentDateTime();
+
+        for (int i = 0; i < 5; i++) {
+            if (i == _cms._nid) continue;
+
+            QJsonObject njsobj;
+            njsobj.insert("cmd", QString::number(RCMD_LEADER_CONFIRM));
+            njsobj.insert("nid", QString::number(_cms._nid));
+            njsobj.insert("to_nid", QString::number(i));
+            njsobj.insert("term", _cms._term);
+
+            QByteArray jstr = QJsonDocument(njsobj).toJson(QJsonDocument::Compact);
+//            qDebug()<<_cms._nid<<"send cmd:"<<jstr.length()<<jstr;
+
+            QTcpSocket *sock = _cms._peer_socks3.value(i);
+            int rc = sock->write(jstr);
+            assert(rc > 0);
+            qDebug()<<_cms._nid<<"send cmd done:"<<rc<<jstr.length()<<jstr;
+        }
+
+        if (!_lds._tmer) {
+            _lds._tmer = new QTimer();
+            connect(_lds._tmer, &QTimer::timeout, this, &RaftNode::on_leader_ping);
+        }
+        _lds._tmer->start(500);
+    }
+
+    //
+    void on_leader_confirm(QTcpSocket *sock, QJsonObject &jsobj)
+    {
+        Q_UNUSED(sock);
+        qDebug()<<_cms._nid<<"confirmed leader:"<<jsobj<<",curr leader:"
+               <<_cms._leader_id<<_cms._term;
+
+        _cms._leader_id = jsobj.value("nid").toString().toInt();
+        _cms._term = jsobj.value("term").toInt();
 
     }
 
     //
-    void on_ping_leader()
+    void on_leader_ping()
     {
+        for (int i = 0; i < 5; i++) {
+            if (i == _cms._nid) continue;
+
+            QJsonObject njsobj;
+            njsobj.insert("cmd", QString::number(RCMD_LEADER_PING));
+            njsobj.insert("nid", QString::number(_cms._nid));
+            njsobj.insert("to_nid", QString::number(i));
+            njsobj.insert("term", _cms._term);
+
+            QByteArray jstr = QJsonDocument(njsobj).toJson(QJsonDocument::Compact);
+//            qDebug()<<_cms._nid<<"send cmd:"<<jstr.length()<<jstr;
+
+            QTcpSocket *sock = _cms._peer_socks3.value(i);
+            int rc = sock->write(jstr);
+            assert(rc > 0);
+            qDebug()<<_cms._nid<<"send cmd done:"<<rc<<jstr.length()<<jstr;
+        }
 
     }
 
     //
-    void on_leader_pong()
+    void on_flower_pong(QTcpSocket *sock, QJsonObject &jsobj)
     {
+        Q_UNUSED(sock);
+        Q_UNUSED(jsobj);
+        _fls._leader_last_update_time = QDateTime::currentDateTime();
 
     }
 
@@ -313,33 +410,45 @@ public slots: // seft emi
     }
 
 public slots: // recv
-    void on_proc_recv(void *zsock, char *req)
+
+    void on_proc_recv(QTcpSocket *c, QByteArray &msg)
     {
-        QJsonDocument jdoc = QJsonDocument::fromJson(QByteArray(req, strlen(req)));
-        qDebug()<<_cms._nid<<zsock<<req<<jdoc;
+
+        QJsonDocument jdoc = QJsonDocument::fromJson(msg);
+        qDebug()<<_cms._nid<<c<<jdoc;
         QJsonObject jsobj = jdoc.object();
         int cmd = jsobj.value("cmd").toString().toInt();
+
         switch (cmd) {
         case RCMD_VOTE_ME:
             if (_cms._ntype == RNT_CANDIDATE) {
-                qDebug()<<_cms._nid<<"i'am candidate. reject";
+                qDebug()<<_cms._nid<<"i'am candidate. reject,"<<jsobj.value("nid");
+                this->on_reject_vote(c, jsobj);
             } else if (_cms._ntype == RNT_LEADER) {
-                qDebug()<<_cms._nid<<"i'am leader. reject";
+                qDebug()<<_cms._nid<<"i'am leader. reject,"<<jsobj.value("nid");
+                this->on_reject_vote(c, jsobj);
             } else {
                 if (_cms._leader_id >= 0) {
-                    qDebug()<<_cms._nid<<"i'am candidate. reject";
+                    qDebug()<<_cms._nid<<"already has leader,reject,"<<jsobj.value("nid")
+                           <<",leader is:"<<_cms._leader_id;
+                    this->on_reject_vote(c, jsobj);
                 } else {
                     // i agree
-                    on_agree_vote(jsobj);
+                    on_agree_vote(c, jsobj);
                 }
             }
             break;
+        case RCMD_LEADER_CONFIRM:
+            this->on_leader_confirm(c, jsobj);
+            break;
+        case RCMD_LEADER_PING:
+            this->on_flower_pong(c, jsobj);
+            break;
         default:
             qDebug()<<_cms._nid<<"unknown cmd:"<<jsobj.value("cmd")<<jsobj.value("cmd").toInt()
-                   <<strlen(req)<<jdoc;
+                   <<msg.length()<<jdoc;
             break;
         }
-
     }
 
 public: // util
