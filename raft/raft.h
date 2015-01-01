@@ -24,6 +24,7 @@ public:
     };
 
 protected:
+public:
     struct ShareState
     {
         QDateTime _begin_time;
@@ -42,6 +43,7 @@ protected:
         // 连接到其他节点服务的socket
         QHash<int, QTcpSocket*>_peer_socks3;
 
+        int _timer_scale = 1; // for daemon use
         QTimer _ticks;
         int _leader_id = -1;
         int _candidate_id = -1;
@@ -51,13 +53,15 @@ protected:
     struct LeaderState : public ShareState
     {
         bool _leave_reign = false;
-        QTimer *_tmer = NULL;
+        QTimer _tmer;
+        int _ping_timeout = 500;
     };
 
     struct CandidateState : public ShareState
     {
-        int _agree_timeout = 3;
+        int _wait_agree_timeout = 300; //msec
         QMap<int, QByteArray> _peer_resps; // nid => agree/not
+        QTimer _tmer;
     };
 
     struct FlowerState : public ShareState
@@ -66,9 +70,12 @@ protected:
         int _ping_leader_times = 0;
         int _ping_leader_error_times = 0;
         QDateTime _leader_last_update_time;
+        QTimer _tmer;
+        int _wait_leader_ping_timeout = 500;
     };
 
 private:
+public:
     CommonState _cms;
     LeaderState _lds;
     CandidateState _cds;
@@ -102,6 +109,7 @@ public:
         connect(c, &QTcpSocket::readyRead, this, &RaftNode::on_server_ready_read);
     }
 
+    // TODO 现在必须保证一次收取一条完整的消息
     void on_server_ready_read()
     {
         QTcpSocket *c = (QTcpSocket*)sender();
@@ -118,6 +126,16 @@ public:
         connect(s, &QTcpServer::newConnection, this, &RaftNode::on_server_new_connection);
 
         s->listen(QHostAddress::Any, _cms._port);
+
+        // leader ping timer
+        _lds._tmer.setSingleShot(false);
+        connect(&_lds._tmer, &QTimer::timeout, this, &RaftNode::on_leader_ping);
+        // candiate wait timer
+        _cds._tmer.setSingleShot(true);
+        connect(&_cds._tmer, &QTimer::timeout, this, &RaftNode::on_vote_resp_timeout);
+        // follower wait ping timer
+        _fls._tmer.setSingleShot(true);
+        connect(&_fls._tmer, &QTimer::timeout, this, &RaftNode::on_wait_leader_ping_timeout);
     }
 
     void run()
@@ -192,13 +210,15 @@ public slots: // seft emi
         }
 
         qDebug()<<_cms._nid<<agrees<<agrees.values().count(1);
-        if (agrees.values().count(1) <= (5 / 2)) {
-            _cms._ntype = RNT_FLOWER;
-            QTimer::singleShot(qrand()%400, this, SLOT(on_state_machine()));
-        } else {
+
+        if (agrees.values().count(1) >= (5 / 2 + 1)) {
             // be leader
             qDebug()<<_cms._nid<<"i am become leader.";
             this->on_become_leader();
+        } else {
+            // split vote
+            _cms._ntype = RNT_FLOWER;
+            QTimer::singleShot(qrand()%400, this, SLOT(on_state_machine()));
         }
     }
 
@@ -207,15 +227,11 @@ public slots: // seft emi
         assert(_cms._ntype != RNT_CANDIDATE);
         assert(_cms._leader_id < 0);
 
-
         _cms._ntype = RNT_CANDIDATE;
         _cms._term += 1;
         _cds._peer_resps.clear();
         _cds._begin_time = QDateTime::currentDateTime();
-        QTimer *tmer = new QTimer(this);
-        tmer->setSingleShot(true);
-        connect(tmer, &QTimer::timeout, this, &RaftNode::on_vote_resp_timeout);
-        tmer->start(300);
+        _cds._tmer.start(_cds._wait_agree_timeout);
 
         qDebug()<<_cms._nid<<" pub vote...";
         int cnter = 0;
@@ -228,10 +244,10 @@ public slots: // seft emi
             sock = _cms._peer_socks3[i];
 
             QJsonObject jsobj;
-            jsobj.insert("cmd", QJsonValue(QString::number(RCMD_VOTE_ME)));
-            jsobj.insert("nid", QJsonValue(QString::number(_cms._nid)));
-            jsobj.insert("to_nid", QJsonValue(QString::number(i)));
-            jsobj.insert("seq", QJsonValue(QString::number(++_cms._pkt_seq)));
+            jsobj.insert("cmd", QString::number(RCMD_VOTE_ME));
+            jsobj.insert("nid", QString::number(_cms._nid));
+            jsobj.insert("to_nid", QString::number(i));
+            jsobj.insert("seq", QString::number(++_cms._pkt_seq));
             jsobj.insert("term", QString::number(_cms._term));
             QByteArray jstr = QJsonDocument(jsobj).toJson(QJsonDocument::Compact);
 //            qDebug()<<_cms._nid<<"cmd:"<<jstr.length()<<jstr;
@@ -255,7 +271,6 @@ public slots: // seft emi
     {
 
     }
-
 
 
     void on_peer_ready_read()
@@ -332,6 +347,7 @@ public slots: // seft emi
     void on_become_leader()
     {
         _cms._ntype = RNT_LEADER;
+        _cms._leader_id = _cms._nid;
         _lds._begin_time = QDateTime::currentDateTime();
 
         for (int i = 0; i < 5; i++) {
@@ -352,11 +368,7 @@ public slots: // seft emi
             qDebug()<<_cms._nid<<"send cmd done:"<<rc<<jstr.length()<<jstr;
         }
 
-        if (!_lds._tmer) {
-            _lds._tmer = new QTimer();
-            connect(_lds._tmer, &QTimer::timeout, this, &RaftNode::on_leader_ping);
-        }
-        _lds._tmer->start(500);
+        _lds._tmer.start(_lds._ping_timeout);
     }
 
     //
@@ -392,6 +404,12 @@ public slots: // seft emi
             qDebug()<<_cms._nid<<"send cmd done:"<<rc<<jstr.length()<<jstr;
         }
 
+    }
+
+    //
+    void on_wait_leader_ping_timeout()
+    {
+        qDebug()<<"fffffffff";
     }
 
     //
@@ -460,6 +478,8 @@ public: // util
 
 /*
  * refer:
+ * http://raftconsensus.github.io/
+ * http://blog.csdn.net/cszhouwei/article/details/38374603
  * http://www.jdon.com/artichect/raft.html
  */
 

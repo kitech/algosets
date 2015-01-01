@@ -22,6 +22,9 @@ private slots:
 
     void on_pushButton_3_clicked();
 
+public slots:
+    void onStatusUpdateTimeout();
+
 private:
     Ui::MainWindow *ui;
 };
