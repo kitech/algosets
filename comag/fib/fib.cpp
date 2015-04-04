@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <vector>
 
+// TODO 更快速的fibonacci算法：fast double 和 matrix exponentiation
+// 详见http://www.nayuki.io/page/fast-fibonacci-algorithms
 
 // 调用栈方式，好像到40就走不动了。
 uint64_t fib_recursive(int n)
